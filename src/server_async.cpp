@@ -133,15 +133,15 @@ void runAsyncServer() {
                     
                     // Check for BGREWRITEAOF command (handled separately)
                     string response;
-                    if (cmd.type == RESPType::Array && !cmd.arrayValue.empty()) {
-                        string cmdName = cmd.arrayValue[0].bulkString;
+                    if (cmd.type == RespType::Array && !cmd.arr_value.empty()) {
+                        string cmdName = cmd.arr_value[0].str_value;
                         transform(cmdName.begin(), cmdName.end(), cmdName.begin(), ::toupper);
-                        
+                        static RespEncoder encoder;
                         if (cmdName == "BGREWRITEAOF") {
                             if (aof.bgRewriteAOF(storage)) {
-                                response = RESPEncoder::encodeSimpleString("Background AOF rewrite started");
+                                response = encoder.encodeSimpleString("Background AOF rewrite started");
                             } else {
-                                response = RESPEncoder::encodeError("ERR rewrite already in progress");
+                                response = encoder.encodeError("ERR rewrite already in progress");
                             }
                         } else {
                             response = handler.handleCommand(cmd);
@@ -149,13 +149,14 @@ void runAsyncServer() {
                     } else {
                         response = handler.handleCommand(cmd);
                     }
-                    
                     // Log to AOF
-                    if (cmd.type == RESPType::Array) {
-                        std::vector<std::string> command = cmd.toStringArray();
+                    if (cmd.type == RespType::Array) {
+                        std::vector<std::string> command;
+                        for (const auto& val : cmd.arr_value) {
+                            command.push_back(val.str_value);
+                        }
                         aof.log(command);
                     }
-                    
                     writeToSocket(clientFd, response);
                 }
             }

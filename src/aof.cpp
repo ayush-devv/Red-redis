@@ -106,28 +106,25 @@ void AOF::replay(Storage& storage) {
     int commandCount = 0;
 
     // Read character by character
-    RESPParser parser;
+    RespParser parser;
     char ch;
     
     while ((ch = fgetc(f)) != EOF) {
         parser.feed(std::string(1, ch));
 
         if (parser.isComplete()) {
-            RESPValue result = parser.getResult();
-            
-            if (result.type == RESPType::Array && !result.arrayValue.empty()) {
+            RespValue result = parser.getResult();
+            if (result.type == RespType::Array && !result.arr_value.empty()) {
                 // Convert RESP array to string vector
                 std::vector<std::string> command;
-                for (const auto& val : result.arrayValue) {
-                    if (val.type == RESPType::BulkString) {
-                        command.push_back(val.bulkString);
+                for (const auto& val : result.arr_value) {
+                    if (val.type == RespType::BulkString) {
+                        command.push_back(val.str_value);
                     }
                 }
-                
                 // Execute command to restore state
                 if (!command.empty()) {
                     std::string cmd = command[0];
-                    
                     // Execute directly on storage (bypass network layer)
                     if (cmd == "SET") {
                         if (command.size() == 3) {
@@ -146,7 +143,6 @@ void AOF::replay(Storage& storage) {
                             storage.expire(command[1], seconds * 1000);  // Convert to ms
                         }
                     }
-                    
                     commandCount++;
                 }
             }
