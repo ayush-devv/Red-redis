@@ -1,0 +1,33 @@
+﻿name: C++ Redis Build
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    - name: Install Build Tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential
+
+    - name: Build Server (make all)
+      run: make
+
+    - name: Run Tests (make test)
+      run: make test
+
+    - name: Dry Run Server (Start and Stop)
+      run: |
+        ./server_async &
+        PID=$!
+        sleep 5
+        kill $PID
