@@ -1,0 +1,7 @@
+# Compiled Binaries
+*.exe
+*.o
+*.out
+
+# Scripts and logs
+*.log

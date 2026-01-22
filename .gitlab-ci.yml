@@ -1,0 +1,53 @@
+# GitLab CI/CD Pipeline for C++ Redis Clone
+# Runs on Linux automatically when you push code
+
+image: gcc:latest
+
+stages:
+  - build
+  - test
+  - run
+
+# Install dependencies
+before_script:
+  - apt-get update -qq
+  - apt-get install -y -qq build-essential redis-tools
+
+# Build the server
+build:
+  stage: build
+  script:
+    - cd cpp-linux
+    - make clean
+    - make
+  artifacts:
+    paths:
+      - cpp-linux/server_async
+    expire_in: 1 hour
+
+# Run tests
+test:
+  stage: test
+  script:
+    - cd cpp-linux
+    - make
+    # Start server in background
+    - ./server_async &
+    - SERVER_PID=$!
+    - sleep 2
+    # Test basic commands
+    - redis-cli -p 7379 PING
+    - redis-cli -p 7379 SET testkey "Hello Linux"
+    - redis-cli -p 7379 GET testkey
+    # Stop server
+    - kill $SERVER_PID
+    - echo "All tests passed!"
+
+# Optional: Keep server running for manual testing
+run_server:
+  stage: run
+  script:
+    - cd cpp-linux
+    - make
+    - ./server_async
+  when: manual  # Only runs when you click "Run" in GitLab UI
