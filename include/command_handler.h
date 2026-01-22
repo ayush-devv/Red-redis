@@ -31,7 +31,7 @@ struct CommandInfo {
 class CommandHandler {
 private:
     Storage& storage;
-    RespEncoder encoder;
+    RESPEncoder encoder;
     unordered_map<string, CommandInfo> commands;  // Command table
     
     // Initialize command table
@@ -52,6 +52,8 @@ public:
     string handleTTL(const RespValue& cmd);
     string handleDel(const RespValue& cmd);
     string handleExpire(const RespValue& cmd);
+    string handleIncr(const RespValue& cmd);
+    string handleInfo(const RespValue& cmd);
 };
 
 #endif

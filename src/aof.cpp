@@ -73,9 +73,7 @@ void AOF::log(const std::vector<std::string>& command) {
     }
 
     // Encode the command as per the RESP format
-    RespEncoder encoder;
-    // TODO: Implement encodeArray in RespEncoder for full compatibility
-    std::string respCmd = encoder.encodeBulkString(command[0]); // Temporary: only logs the command name
+    std::string respCmd = RESPEncoder::encodeArray(command);
 
     // Write to the file
     size_t written = fwrite(respCmd.c_str(), 1, respCmd.size(), aofFile);
@@ -107,15 +105,29 @@ void AOF::replay(Storage& storage) {
     std::cout << "Replaying AOF file: " << filename << std::endl;
     int commandCount = 0;
 
-    // Read character by character
-    RespParser parser;
-    char ch;
+    // Read entire file into string
+    fseek(f, 0, SEEK_END);
+    long fileSize = ftell(f);
+    fseek(f, 0, SEEK_SET);
     
-    while ((ch = fgetc(f)) != EOF) {
-        parser.feed(std::string(1, ch));
-
-        if (parser.isComplete()) {
-            RespValue result = parser.getResult();
+    if (fileSize <= 0) {
+        fclose(f);
+        std::cout << "Empty AOF file" << std::endl;
+        return;
+    }
+    
+    std::string fileContent(fileSize, '\0');
+    fread(&fileContent[0], 1, fileSize, f);
+    fclose(f);
+    
+    // Parse commands
+    RespParser parser;
+    int pos = 0;
+    
+    while (pos < fileContent.size()) {
+        try {
+            RespValue result = parser.decodeInternal(fileContent, pos);
+            
             if (result.type == RespType::Array && !result.arr_value.empty()) {
                 // Convert RESP array to string vector
                 std::vector<std::string> command;
@@ -124,16 +136,21 @@ void AOF::replay(Storage& storage) {
                         command.push_back(val.str_value);
                     }
                 }
+                
                 // Execute command to restore state
                 if (!command.empty()) {
                     std::string cmd = command[0];
+                    
                     // Execute directly on storage (bypass network layer)
                     if (cmd == "SET") {
                         if (command.size() == 3) {
                             storage.set(command[1], command[2]);
-                        } else if (command.size() == 5 && command[3] == "PX") {
+                        } else if (command.size() >= 5 && command[3] == "PX") {
                             int64_t ttl = std::stoll(command[4]);
                             storage.setWithExpiry(command[1], command[2], ttl);
+                        } else if (command.size() >= 5 && command[3] == "EX") {
+                            int64_t seconds = std::stoll(command[4]);
+                            storage.setWithExpiry(command[1], command[2], seconds * 1000);
                         }
                     } else if (cmd == "DEL") {
                         for (size_t i = 1; i < command.size(); i++) {
@@ -142,18 +159,32 @@ void AOF::replay(Storage& storage) {
                     } else if (cmd == "EXPIRE") {
                         if (command.size() == 3) {
                             int64_t seconds = std::stoll(command[2]);
-                            storage.expire(command[1], seconds * 1000);  // Convert to ms
+                            storage.expire(command[1], seconds);
+                        }
+                    } else if (cmd == "INCR") {
+                        // INCR during replay - just get current and increment
+                        auto val = storage.get(command[1]);
+                        if (val.has_value()) {
+                            try {
+                                int64_t num = std::stoll(val.value()) + 1;
+                                storage.set(command[1], std::to_string(num));
+                            } catch (...) {
+                                // Non-integer, skip
+                            }
+                        } else {
+                            storage.set(command[1], "1");
                         }
                     }
+                    
                     commandCount++;
                 }
             }
-            
-            parser.reset();
+        } catch (...) {
+            // Parsing error, skip to next
+            break;
         }
     }
     
-    fclose(f);
     std::cout << "AOF loaded: " << commandCount << " commands replayed" << std::endl;
 }
 
@@ -198,9 +229,7 @@ bool AOF::bgRewriteAOF(Storage& storage) {
                 }
             }
             
-            RespEncoder encoder;
-            // TODO: Implement encodeArray in RespEncoder for full compatibility
-            std::string respCmd = encoder.encodeBulkString(cmd[0]); // Temporary: only logs the command name
+            std::string respCmd = RESPEncoder::encodeArray(cmd);
             fwrite(respCmd.c_str(), 1, respCmd.size(), tempFile);
         }
         

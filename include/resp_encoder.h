@@ -2,16 +2,18 @@
 #define RESP_ENCODER_H
 
 #include <string>
+#include <vector>
 #include <cstdint>
 using namespace std;
 
-class RespEncoder {
+class RESPEncoder {
 public:
-    string encodeSimpleString(const string& s);
-    string encodeError(const string& s);
-    string encodeBulkString(const string& s);
-    string encodeNull();
-    string encodeInteger(int64_t n);
+    static string encodeSimpleString(const string& s);
+    static string encodeError(const string& s);
+    static string encodeBulkString(const string& s);
+    static string encodeNull();
+    static string encodeInteger(int64_t n);
+    static string encodeArray(const vector<string>& arr);
 };
 
 #endif

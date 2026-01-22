@@ -33,7 +33,9 @@ void Storage::setWithExpiry(const string& key, const string& value, int64_t dura
         expiresAt = now + durationMs;
     }
     
-    data[key] = {value, expiresAt, now};  // Track lastAccessTime
+    // Deduce encoding for the value
+    uint8_t encoding = deduceEncoding(value);
+    data[key] = StoredValue(value, expiresAt, now, OBJ_TYPE_STRING | encoding);
 }
 
 // Get value with lazy expiration check

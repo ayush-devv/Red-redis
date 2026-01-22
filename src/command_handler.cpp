@@ -1,6 +1,7 @@
-#include "command_handler.h"
+#include "../include/command_handler.h"
 #include <algorithm>
 #include <cctype>
+#include <sstream>
 
 // Constructor - initialize command table
 CommandHandler::CommandHandler(Storage& store) : storage(store) {
@@ -15,7 +16,8 @@ void CommandHandler::initCommandTable() {
     commands["TTL"]  = {&CommandHandler::handleTTL,   2, CMD_READONLY | CMD_FAST};
     commands["DEL"]  = {&CommandHandler::handleDel,  -2, CMD_WRITE};
     commands["EXPIRE"] = {&CommandHandler::handleExpire, 3, CMD_WRITE};
-
+    commands["INCR"] = {&CommandHandler::handleIncr,  2, CMD_WRITE | CMD_FAST};
+    commands["INFO"] = {&CommandHandler::handleInfo, -1, CMD_READONLY | CMD_FAST};
 }
 
 // Helper: Convert string to uppercase
@@ -165,4 +167,61 @@ string CommandHandler::handleExpire(const RespValue& cmd) {
     bool success = storage.expire(key, seconds);
     
     return encoder.encodeInteger(success ? 1 : 0);
+}
+
+// INCR key - Atomically increment integer value
+string CommandHandler::handleIncr(const RespValue& cmd) {
+    string key = cmd.arr_value[1].str_value;
+    StoredValue* obj = storage.getPtr(key);
+    
+    // Key doesn't exist - create with value 1
+    if (obj == nullptr) {
+        storage.set(key, "1");
+        return encoder.encodeInteger(1);
+    }
+    
+    // Check if it's a string type
+    if (storage.getType(obj->typeEncoding) != OBJ_TYPE_STRING) {
+        return encoder.encodeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+    }
+    
+    // Try to parse as integer
+    int64_t val;
+    if (!parseInteger(obj->value, val)) {
+        return encoder.encodeError("ERR value is not an integer or out of range");
+    }
+    
+    // Increment and update
+    val++;
+    obj->value = std::to_string(val);
+    obj->typeEncoding = OBJ_TYPE_STRING | OBJ_ENCODING_INT;
+    
+    return encoder.encodeInteger(val);
+}
+
+// INFO [section] - Server statistics (calculated on-demand)
+string CommandHandler::handleInfo(const RespValue& cmd) {
+    std::stringstream info;
+    
+    // Count keys with expiry (lazy calculation)
+    size_t keysWithExpiry = 0;
+    for (const auto& pair : storage.getAll()) {
+        if (pair.second.expiresAt != -1) {
+            keysWithExpiry++;
+        }
+    }
+    
+    // Keyspace section
+    info << "# Keyspace\r\n";
+    info << "db0:keys=" << storage.size() 
+         << ",expires=" << keysWithExpiry 
+         << ",avg_ttl=0\r\n";
+    
+    // Server section
+    info << "\r\n# Server\r\n";
+    info << "redis_version:7.0.0-cpp-clone\r\n";
+    info << "os:Linux\r\n";
+    info << "arch_bits:64\r\n";
+    
+    return encoder.encodeBulkString(info.str());
 }

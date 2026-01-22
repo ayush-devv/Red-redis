@@ -21,12 +21,11 @@ private:
     RespValue parseBulkString(const string& data, int& pos);
     RespValue parseArray(const string& data, int& pos);
     
-    // Internal decoder
-    RespValue decodeInternal(const string& data, int& pos);
-    
 public:
     // Public API
     RespValue decode(const string& data);
+    // Internal decoder (public for AOF replay and pipelining)
+    RespValue decodeInternal(const string& data, int& pos);
 };
 
 #endif

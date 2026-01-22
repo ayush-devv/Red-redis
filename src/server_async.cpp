@@ -7,6 +7,9 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <signal.h>
+#include <atomic>
+#include <cerrno>
 
 #include <iostream>
 #include <string>
@@ -15,11 +18,23 @@
 #include <chrono>
 #include <algorithm>
 #include "../include/resp_parser.h"
+#include "../include/resp_encoder.h"
 #include "../include/command_handler.h"
 #include "../include/storage.h"
 #include "../include/aof.h"
 using namespace std;
 using namespace std::chrono;
+
+// Graceful shutdown flag (atomic for thread safety)
+std::atomic<bool> shutdownRequested(false);
+
+// Signal handler for Ctrl+C (SIGINT) and SIGTERM
+void signalHandler(int signum) {
+    if (signum == SIGINT || signum == SIGTERM) {
+        cout << "\n\033[1;33m⚠ Shutdown signal received, cleaning up...\033[0m" << endl;
+        shutdownRequested.store(true);
+    }
+}
 
 // Global storage (single-threaded, no mutex needed!)
 Storage storage;
@@ -84,7 +99,8 @@ void runAsyncServer() {
     
     cout << "\033[1;32mServer ready on port " << PORT << "\033[0m" << endl;
     
-    while (true) {
+    // Main event loop - run until shutdown requested
+    while (!shutdownRequested.load()) {
         // Active expiration - check every 1 second
         auto now = steady_clock::now();
         if (now - lastCleanupTime >= cleanupInterval) {
@@ -92,8 +108,16 @@ void runAsyncServer() {
             lastCleanupTime = now;
         }
         
-        // Wait for events
-        int nfds = epoll_wait(epollFd, events, 100, -1);
+        // Wait for events with timeout (so we can check shutdown flag)
+        int nfds = epoll_wait(epollFd, events, 100, 1000);  // 1 second timeout
+        
+        if (nfds == -1) {
+            if (errno == EINTR) {
+                // Interrupted by signal, check shutdown flag
+                continue;
+            }
+            break;
+        }
         
         for (int i = 0; i < nfds; i++) {
             if (events[i].data.fd == serverSock) {
@@ -128,40 +152,60 @@ void runAsyncServer() {
                     close(clientFd);
                     parsers.erase(clientFd);
                 } else {
-                    // Process command
-                    RespValue cmd = parsers[clientFd].decode(msg);
+                    // Process ALL commands in buffer (pipelining support)
+                    string allResponses;
+                    int pos = 0;
                     
-                    // Check for BGREWRITEAOF command (handled separately)
-                    string response;
-                    if (cmd.type == RespType::Array && !cmd.arr_value.empty()) {
-                        string cmdName = cmd.arr_value[0].str_value;
-                        transform(cmdName.begin(), cmdName.end(), cmdName.begin(), ::toupper);
-                        static RespEncoder encoder;
-                        if (cmdName == "BGREWRITEAOF") {
-                            if (aof.bgRewriteAOF(storage)) {
-                                response = encoder.encodeSimpleString("Background AOF rewrite started");
+                    // Loop through all commands in the message
+                    while (pos < msg.size()) {
+                        RespValue cmd = parsers[clientFd].decodeInternal(msg, pos);
+                        
+                        // Check for BGREWRITEAOF command (handled separately)
+                        string response;
+                        if (cmd.type == RespType::Array && !cmd.arr_value.empty()) {
+                            string cmdName = cmd.arr_value[0].str_value;
+                            transform(cmdName.begin(), cmdName.end(), cmdName.begin(), ::toupper);
+                            
+                            if (cmdName == "BGREWRITEAOF") {
+                                if (aof.bgRewriteAOF(storage)) {
+                                    response = RESPEncoder::encodeSimpleString("Background AOF rewrite started");
+                                } else {
+                                    response = RESPEncoder::encodeError("ERR rewrite already in progress");
+                                }
                             } else {
-                                response = encoder.encodeError("ERR rewrite already in progress");
+                                response = handler.handleCommand(cmd);
                             }
                         } else {
                             response = handler.handleCommand(cmd);
                         }
-                    } else {
-                        response = handler.handleCommand(cmd);
-                    }
-                    // Log to AOF
-                    if (cmd.type == RespType::Array) {
-                        std::vector<std::string> command;
-                        for (const auto& val : cmd.arr_value) {
-                            command.push_back(val.str_value);
+                        
+                        // Log to AOF
+                        if (cmd.type == RespType::Array) {
+                            std::vector<std::string> command;
+                            for (const auto& val : cmd.arr_value) {
+                                command.push_back(val.str_value);
+                            }
+                            aof.log(command);
                         }
-                        aof.log(command);
+                        
+                        allResponses += response;
                     }
-                    writeToSocket(clientFd, response);
+                    
+                    writeToSocket(clientFd, allResponses);
                 }
             }
         }
     }
+    
+    // Cleanup on shutdown
+    cout << "\033[1;33m🔄 Flushing data to disk...\033[0m" << endl;
+    
+    // Close all client connections
+    for (const auto& pair : parsers) {
+        close(pair.first);
+    }
+    
+    cout << "\033[1;32m✓ Graceful shutdown complete\033[0m" << endl;
     
     close(serverSock);
     close(epollFd);
@@ -180,7 +224,12 @@ int main() {
     cout << "\033[1;33mRedis Clone - Async Server v1.0 (Linux)\033[0m" << endl;
     cout << "\033[1;33mPort: " << PORT << "\033[0m" << endl;
     cout << "\033[1;32mReady to accept connections...\033[0m" << endl;
+    cout << "\033[1;33mPress Ctrl+C for graceful shutdown\033[0m" << endl;
     cout << endl;
+    
+    // Register signal handlers for graceful shutdown
+    signal(SIGINT, signalHandler);   // Ctrl+C
+    signal(SIGTERM, signalHandler);  // kill command
     
     // Replay AOF to restore data
     aof.replay(storage);
